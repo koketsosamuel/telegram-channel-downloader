@@ -1,7 +1,7 @@
 const ChannelDownloader = require("./scripts/download-channel");
 const channelDownloader = new ChannelDownloader();
 
-const channelId = "";
+const channelId = "-1001529361022";
 const downloadableFiles = {
   webpage: true,
   poll: true,
@@ -10,7 +10,7 @@ const downloadableFiles = {
   venue: true,
   sticker: true,
   image: true,
-  video: true,
+  video: false,
   audio: true,
   pdf: true,
 };

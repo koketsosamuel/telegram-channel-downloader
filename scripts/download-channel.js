@@ -20,13 +20,11 @@ const {
 } = require("../utils/file-helper");
 const logger = require("../utils/logger");
 const { getDialogName, getAllDialogs } = require("../modules/dialoges");
-const {
-  downloadOptionInput,
-  selectInput,
-} = require("../utils/input-helper");
+const { downloadOptionInput, selectInput } = require("../utils/input-helper");
 
-const MAX_PARALLEL_DOWNLOAD = 5;
-const MESSAGE_LIMIT = 10;
+const MAX_PARALLEL_DOWNLOAD = 25;
+const MESSAGE_LIMIT = 100;
+const MAX_VIDEO_SIZE_BYTES = 50 * 1024 * 1024; // 50MB
 
 /**
  * Handles downloading media from a Telegram channel
@@ -60,14 +58,25 @@ class DownloadChannel {
    */
   canDownload(message) {
     if (!this.hasMedia(message)) return false;
+
     const mediaType = getMediaType(message);
     const mediaPath = getMediaPath(message, this.outputFolder);
     const fileExists = checkFileExist(message, this.outputFolder);
     const extension = path.extname(mediaPath).toLowerCase().replace(".", "");
+
     const allowed =
       this.downloadableFiles?.[mediaType] ||
       this.downloadableFiles?.[extension] ||
       this.downloadableFiles?.all;
+
+    // Check for video size limit
+    if (mediaType === "video") {
+      const size = Number(message?.media?.document?.size || 0);
+      if (size > MAX_VIDEO_SIZE_BYTES) {
+        console.log(`Skipping video: ${size} bytes is over the 50MB limit`);
+        return false;
+      }
+    }
 
     return allowed && !fileExists;
   }
@@ -107,6 +116,7 @@ class DownloadChannel {
    * @param {Number} offsetMsgId The message offset
    */
   async downloadChannel(client, channelId, offsetMsgId = 0) {
+    let downloadQueuePaths = [];
     try {
       this.outputFolder = path.join(
         process.cwd(),
@@ -127,15 +137,27 @@ class DownloadChannel {
       const details = await getMessageDetail(client, channelId, ids);
       const downloadQueue = [];
 
+      const timeout = setTimeout(() => {
+        if (downloadQueuePaths.length) {
+          downloadQueuePaths.forEach((p) => fs.unlinkSync(p));
+
+          setTimeout(() => {
+            process.exit();
+          }, 3000);
+        }
+      }, 1000 * 60 * 2);
+
       for (const msg of details) {
         if (this.canDownload(msg)) {
           logger.info(`Downloading ${msg.id}`);
+          const p = getMediaPath(msg, this.outputFolder);
           downloadQueue.push(
-            downloadMessageMedia(
-              client,
-              msg,
-              getMediaPath(msg, this.outputFolder)
-            )
+            downloadMessageMedia(client, msg, p).then((res) => {
+              downloadQueuePaths = downloadQueuePaths.filter(
+                (path) => path !== p
+              );
+              return res;
+            })
           );
         } else {
           // logger.info(`No media to download for ${msg.id}`);
@@ -143,8 +165,10 @@ class DownloadChannel {
         if (downloadQueue.length >= MAX_PARALLEL_DOWNLOAD) {
           logger.info(`Processing ${MAX_PARALLEL_DOWNLOAD} downloads`);
           await Promise.all(downloadQueue);
+          downloadQueuePaths = [];
+          timeout.close();
           downloadQueue.length = 0;
-          await wait(3);
+          // await wait);
         }
       }
 
@@ -161,6 +185,11 @@ class DownloadChannel {
         messages[messages.length - 1].id
       );
     } catch (err) {
+      downloadQueuePaths.forEach((p) => fs.unlinkSync(p));
+
+      setTimeout(() => {
+        process.exit();
+      });
       logger.error("An error occurred:");
       console.error(err);
     }
